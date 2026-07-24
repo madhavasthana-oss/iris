@@ -118,28 +118,36 @@ def test_extension():
         device = torch.device('cuda')
         param = torch.randn(100, device=device, requires_grad=True)
         grad = torch.randn(100, device=device)
-        exp_avg = torch.zeros(100, device=device)
-        exp_avg_sq = torch.zeros(100, device=device)
-        param_uncertainty = torch.zeros(100, device=device)
-        max_exp_avg = torch.zeros(100, device=device)
-        step = torch.tensor(0, dtype=torch.int64, device=device)
+        grad_estimate = torch.zeros(100, device=device)
+        variance_estimate = torch.zeros(100, device=device)
+        max_variance_estimate = torch.zeros(100, device=device)
+        innovation_residual = torch.zeros(100, device=device)
+        step = torch.zeros((), device=device)
         
         print("✓ Imported fused_iris_kernel successfully")
         print(f"  Available functions: {[x for x in dir(fused_iris_kernel) if not x.startswith('_')]}")
         
         # Call the function
         result = fused_iris_kernel.iris_fused_cuda(
-            param, grad, exp_avg, exp_avg_sq, param_uncertainty,
-            max_exp_avg, step,
-            lr=0.001,
-            beta1=0.9,
-            beta2=0.999,
-            wd=0.01,
-            eps=1e-8,
-            trust=1.0,
-            kalman_mode=False,
-            process_noise=1e-8,
-            amsgrad=False
+            param,
+            grad,
+            grad_estimate,
+            variance_estimate,
+            max_variance_estimate,
+            innovation_residual,
+            step,
+            0.0,
+            0.0,
+            0.0,
+            0.001,
+            0.98,
+            0.92,
+            0.99,
+            0.01,
+            1e-8,
+            1.0,
+            False,
+            False,
         )
         
         print("✓ Extension test passed!")
