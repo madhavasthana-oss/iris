@@ -1,0 +1,31 @@
+\begin{algorithm}
+\caption{IRIS: Innovation Residual Iterative Stabilization}
+\begin{algorithmic}
+\REQUIRE Learning rate $\eta$, weight decay $\lambda$, numerical stability $\varepsilon$
+\REQUIRE EMA coefficients $(\beta_1, \beta_2, \beta_3)$, optional split-correction $\gamma$
+\STATE Initialize $\widehat{\mathbf{g}}_0 \gets \mathbf{0}, \; \widehat{\bm{\varepsilon}}_0 \gets \mathbf{0}, \; \widehat{\mathbf{v}}_0 \gets \mathbf{0}$
+\STATE Initialize bias correction $\psi_{1,0} \gets 0, \; \psi_{2,0} \gets 0, \; \psi_{3,0} \gets 0$
+\FOR{$t = 1, 2, 3, \ldots$}
+    \STATE $\psi_{i,t} \gets \beta_i \cdot \psi_{i,t-1} + 1, \quad \forall i \in \{1,2,3\}$ \hfill // Bias correction accumulators
+    \IF{split-correction $\gamma$}
+    \STATE $\varphi_{t} \gets \gamma \cdot \varphi_{t-1} + 1, \quad \forall i \in \{1,2,3\}$ \hfill // Bias correction accumulators
+    \STATE $\textcolor{blue}{\mathbf{I}_{t|t-1}} \gets \mathbf{g}_t - \textcolor{blue}{\widehat{\mathbf{g}}_{t-1}}$ \hfill // Innovation (prediction error)
+    \STATE $\textcolor{blue}{\widehat{\mathbf{g}}_t} \gets \textcolor{blue}{\widehat{\mathbf{g}}_{t-1}} + \psi_{1,t}^{-1} \textcolor{blue}{\mathbf{I}_{t|t-1}}$ \hfill // Update gradient estimate
+    \STATE $\epshat_t\gets(1-\psi_{2,t}^{-1})\epshat_{t-1}+\psi_{2,t}^{-1} \textcolor{blue}{\mathbf{I}_{t|t-1}}$
+    \STATE $\textcolor{blue}{\widehat{\mathbf{v}}_t} \gets (1-\psi_{3,t}^{-1})\textcolor{blue}{\widehat{\mathbf{v}}_{t-1}} + \psi_{3,t}^{-1} {\mathbf{g}_{t}^2}$ \hfill // Update gradient estimate
+    \STATE $\nhat_t\gets(1-\varphi_{t}^{-1})\nhat_{t-1}+\varphi_{t}^{-1} \textcolor{blue}{\mathbf{I}_{t|t-1}^2}$
+    \STATE $\mathbf{x}_t \gets (1 - \eta\lambda) \mathbf{x}_{t-1} - \eta \left(\dfrac{\textcolor{blue}{\widehat{\mathbf{g}}_t} }{\sqrt{\textcolor{blue}{\widehat{\mathbf{v}}_t}} + \varepsilon}+\beta_2\dfrac{{\widehat{\bm{\varepsilon}}_t}}{\sqrt{\widehat{\mathbf{n}}_t} + \varepsilon}\right)$ \hfill // Parameter update
+    
+    \ELSE
+    \STATE $\textcolor{blue}{\mathbf{I}_{t|t-1}} \gets \mathbf{g}_t - \textcolor{blue}{\widehat{\mathbf{g}}_{t-1}}$ \hfill // Innovation (prediction error)
+    \STATE $\textcolor{OliveGreen}{\mathbf{E}_{t|t-1}} \gets \textcolor{blue}{\mathbf{I}_{t|t-1}} - \textcolor{OliveGreen}{\widehat{\bm{\varepsilon}}_{t-1}}$ \hfill // Error-of-innovation
+    \STATE ${\bm{\Sigma}_{t|t-1}} \gets (\mathbf{g}_t + \beta_2 \textcolor{blue}{\mathbf{I}_{t|t-1}})^2 - \widehat{\mathbf{v}}_{t-1}$ \hfill // Variance innovation
+    \STATE $\textcolor{blue}{\widehat{\mathbf{g}}_t} \gets \textcolor{blue}{\widehat{\mathbf{g}}_{t-1}} + \psi_{1,t}^{-1} \textcolor{blue}{\mathbf{I}_{t|t-1}}$ \hfill // Update gradient estimate
+    \STATE $\textcolor{OliveGreen}{\widehat{\bm{\varepsilon}}_t} \gets \textcolor{OliveGreen}{\widehat{\bm{\varepsilon}}_{t-1}} + \psi_{2,t}^{-1} \textcolor{OliveGreen}{\mathbf{E}_{t|t-1}}$ \hfill // Update innovation residual
+    \STATE $\widehat{\mathbf{v}}_t \gets \widehat{\mathbf{v}}_{t-1} + \psi_{3,t}^{-1} \bm{\Sigma}_{t|t-1}$ \hfill // Update variance
+    \STATE $\mathbf{x}_t \gets (1 - \eta\lambda) \mathbf{x}_{t-1} - \eta \dfrac{\textcolor{blue}{\widehat{\mathbf{g}}_t} + \beta_2 \textcolor{OliveGreen}{\widehat{\bm{\varepsilon}}_t}}{\sqrt{\widehat{\mathbf{v}}_t} + \varepsilon}$ \hfill // Parameter update
+    \ENDIF
+\ENDFOR
+\STATE \textbf{return} $\mathbf{x}_t$
+\end{algorithmic}
+\end{algorithm}

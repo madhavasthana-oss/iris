@@ -1,0 +1,115 @@
+\subsection{Motivation: Why Innovation Over Gradient Difference?}
+
+Consider optimizing $f(\x)$ with stochastic gradients $\g_t = \nabla f(\x_t) + \xi_t$ where $\E[\xi_t] = 0$, $\Var[\xi_t] = \sigma^2$.
+
+\textbf{Adan's gradient difference:}
+\begin{equation}
+d_t = \g_t - \g_{t-1}
+\end{equation}
+This compares \emph{two noisy samples}. Under weak correlation:
+\begin{equation}
+\Var[d_t] = \Var[\g_t] + \Var[\g_{t-1}] - 2\Cov[\g_t, \g_{t-1}] \approx 2\sigma^2
+\end{equation}
+
+\textbf{IRIS's innovation:}
+\begin{equation}
+\Innovation_{t|t-1} = \g_t - \ghat_{t-1}
+\end{equation}
+This compares \emph{noisy sample to smooth estimate} $\ghat_{t-1} = \beta_1 \ghat_{t-2} + (1-\beta_1)\g_{t-1}$:
+\begin{equation}
+\Var[\Innovation_{t|t-1}] = \Var[\g_t] + \underbrace{\Var[\ghat_{t-1}]}_{\approx 0} \approx \sigma^2
+\end{equation}
+
+\begin{proposition}[Variance Reduction]
+\label{prop:variance}
+For stochastic gradients with variance $\sigma^2$ and weak temporal correlation, gradient difference has approximately 2$\times$ the variance of innovation:
+\begin{equation}
+\frac{\Var[d_t]}{\Var[\Innovation_{t|t-1}]} \approx 2
+\end{equation}
+\end{proposition}
+
+\textbf{Implication:} Innovation's 50\% lower variance enables stable convergence even with high variance smoothing ($\beta_3 \geq 0.999$), allowing 10-1000$\times$ higher learning rates.
+
+\subsection{The IRIS Algorithm}
+
+IRIS maintains three bias-corrected estimates:
+\begin{itemize}
+    \item $\ghat_t$: Gradient estimate (momentum)
+    \item $\epshat_t$: Innovation residual (systematic error accumulation)
+    \item $\vhat_t$: Variance estimate (uncertainty of corrected gradient)
+\end{itemize}
+
+\input{__iris__}
+
+\subsection{Key Design Choices}
+
+\subsubsection{Variance Matching (Line 9)}
+
+The variance term $(\g_t + \beta_2 \Innovation_{t|t-1})^2$ estimates uncertainty of the \emph{corrected gradient}---exactly what appears in the numerator. This ensures the preconditioner scale matches the update scale.
+
+\textbf{Contrast with AdaBelief:} AdaBelief uses $(\g_t - \m_t)^2$ in the \emph{denominator}, causing:
+\begin{itemize}
+    \item Division by small numbers when $\g_t \approx \m_t$ (instability)
+    \item Inverse scaling: small prediction error $\implies$ large step (counterintuitive)
+    \item No variance matching: denominator doesn't match numerator structure
+\end{itemize}
+
+IRIS uses innovation in the \emph{numerator}: correction modifies \emph{direction}, not scale. Variance matching in denominator provides stable preconditioning.
+
+\subsubsection{Recursive Bias Correction (Line 4)}
+
+Standard Adam uses $\hat{m}_t = m_t / (1 - \beta_1^t)$, requiring:
+\begin{itemize}
+    \item Integer $t$ from GPU (GPU-CPU synchronization)
+    \item Exponentiation $\beta_1^t$ (numerical instability at large $t$)
+\end{itemize}
+
+IRIS uses recursive accumulation:
+\begin{equation}
+\psi_{i,t} = \beta_i \psi_{i,t-1} + 1 \implies \psi_{i,t}^{-1} = \frac{\beta_i^{-1}}{\psi_{i,t-1}^{-1} + \beta_i^{-1}}
+\end{equation}
+
+This is equivalent to Kalman gain with static measurement noise $R = \beta_i^{-1}$:
+\begin{equation}
+K_t = \frac{P_{t-1}}{P_{t-1} + R} \quad \text{(Kalman filter)}
+\end{equation}
+where $P_t \leftrightarrow \psi_t^{-1}$ (accumulated uncertainty), $R \leftrightarrow \beta^{-1}$ (measurement noise).
+
+\textbf{Benefits:} No GPU-CPU sync, no exponentiation, exact bias correction from step 1 $\implies$ \textbf{no warmup required}.
+
+\subsubsection{Timescale Separation (\texorpdfstring{$\beta_2 < \beta_1$}{beta2 < beta1})}
+
+We empirically find optimal $\beta_2 = \beta_1 - \delta$ where $\delta \in [0.15, 0.25]$. This creates timescale separation:
+\begin{align}
+\tau_{\text{gradient}} &= \frac{1}{1-\beta_1} \approx 50 \text{ steps (slow: tracks true gradient)} \\
+\tau_{\text{error}} &= \frac{1}{1-\beta_2} \approx 12 \text{ steps (fast: reacts to errors)}
+\end{align}
+
+\textbf{Intuition:} Error correction must adapt \emph{faster} than the error itself. If $\beta_2 \approx \beta_1$, both move at same timescale $\implies$ always chasing, never catching.
+
+This is hierarchical adaptive control: fast inner loop stabilizes, slow outer loop tracks.
+
+\subsection{Comparison with Adan}
+
+\begin{table}[h]
+\centering
+\caption{IRIS vs Adan: Algorithmic Comparison}
+\label{tab:iris_vs_adan}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Property} & \textbf{Adan} & \textbf{IRIS} \\
+\midrule
+Core quantity & $d_t = \g_t - \g_{t-1}$ & $\Innovation_{t|t-1} = \g_t - \ghat_{t-1}$ \\
+Interpretation & Gradient velocity & Prediction error \\
+Variance & $2\sigma^2$ (two samples) & $\sigma^2$ (vs smooth estimate) \\
+Near-minima behavior & $d_t \to 0$ (correction vanishes) & $\Innovation_{t|t-1} < 0$ (active damping) \\
+Stored gradients & Requires $\g_{t-1}$ & No gradient storage \\
+Memory buffers & 4 ($\m$, $\mathbf{v}$, $\mathbf{d}$, $\g_{t-1}$) & 3 ($\ghat$, $\vhat$, $\epshat$) \\
+Bias correction & Standard ($\beta^t$) & Kalman gain (recursive) \\
+Stability & Convergence-divergence cycles & Unconditional stability \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Key difference:} Adan's gradient difference becomes \emph{less informative} as training progresses (approaches zero near minima). IRIS's innovation remains \emph{informative throughout}---near minima, lagging momentum creates large negative innovation that automatically damps updates.

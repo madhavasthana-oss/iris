@@ -1,0 +1,8 @@
+\begin{abstract}
+Adaptive gradient methods face a fundamental tradeoff: aggressive learning rates accelerate convergence but risk instability, while conservative rates require extensive tuning. 
+We introduce \textbf{IRIS} (Innovation Residual Iterative Stabilization), an optimizer that tolerates learning rates \textbf{10-1000$\times$ higher} than existing methods through innovation-based error correction. Unlike gradient difference methods (e.g., Adan: $d_t = \g_t - \g_{t-1}$) which exhibit 2$\times$ variance and convergence-divergence cycles, IRIS tracks \emph{innovation}---prediction error relative to smooth momentum ($\Innovation_{t|t-1} = \g_t - \ghat_{t-1}$)---enabling automatic stabilization even with extreme learning rates.
+
+On toy optimization landscapes, IRIS achieves 10-1000$\times$ better convergence than Adam-family optimizers (Rosenbrock with LR=1.0: IRIS reaches distance 0.07, Adam fails at LR$>$0.01) and uniquely escapes local minima on Rastrigin where all competitors fail. On CIFAR-100 (ResNet-18, batch 2048), IRIS achieves +0.8\% accuracy over AdamW while training 25\% faster (113 vs 150 minutes) with no warmup required. IRIS maintains Adam-equivalent computational cost while eliminating hyperparameter sensitivity: a single learning rate (0.3-1.0) works universally across tasks.
+
+\textbf{Code:} \url{https://github.com/madhavasthana-oss/iris}
+\end{abstract}

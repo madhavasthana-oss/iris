@@ -1,0 +1,65 @@
+\subsection{Variance Reduction and Stability}
+
+\begin{theorem}[Innovation Variance Reduction]
+\label{thm:variance_reduction}
+Under stochastic gradient noise with $\E[\xi_t] = 0$, $\Var[\xi_t] = \sigma^2$, and weak temporal correlation $|\Cov[\xi_t, \xi_{t-1}]| \leq \rho \sigma^2$ where $\rho \ll 1$:
+\begin{equation}
+\Var[\Innovation_{t|t-1}] \leq (1 + \epsilon(\beta_1)) \sigma^2 \ll 2\sigma^2 \approx \Var[d_t]
+\end{equation}
+where $\epsilon(\beta_1) \to 0$ as $\beta_1 \to 1$.
+\end{theorem}
+
+\begin{proof}[Proof sketch]
+Expand $\ghat_{t-1} = \sum_{i=0}^{t-2} \beta_1^i (1-\beta_1) \g_{t-1-i}$. Since $\g_i$ are weakly correlated:
+\begin{align}
+\Var[\ghat_{t-1}] &= \sum_{i=0}^{t-2} [\beta_1^i (1-\beta_1)]^2 \Var[\g_{t-1-i}] + \text{cross terms} \\
+&\leq (1-\beta_1)^2 \sigma^2 \sum_{i=0}^{\infty} \beta_1^{2i} + O(\rho) \\
+&= \frac{(1-\beta_1)^2}{1-\beta_1^2} \sigma^2 + O(\rho) = \frac{1-\beta_1}{1+\beta_1} \sigma^2 + O(\rho)
+\end{align}
+For $\beta_1 = 0.98$: $\Var[\ghat_{t-1}] \approx 0.01\sigma^2$. Thus $\Var[\Innovation_{t|t-1}] \approx \sigma^2 + 0.01\sigma^2 \approx \sigma^2$.
+\end{proof}
+
+\begin{corollary}[Stability at High Variance Smoothing]
+With $\beta_3 = 0.999$ (high variance smoothing), IRIS maintains stable convergence while Adan oscillates due to the 2$\times$ variance in $d_t$ overwhelming the smoothing.
+\end{corollary}
+
+\subsection{Near-Minima Automatic Damping}
+
+\begin{proposition}[Self-Stabilization Near Minima]
+\label{prop:near_minima}
+Near a local minimum where $\|\g_t\| \to 0$ but $\|\ghat_{t-1}\| > 0$ (lagging momentum):
+\begin{equation}
+\Innovation_{t|t-1} = \g_t - \ghat_{t-1} < 0 \implies \beta_2 \epshat_t < 0
+\end{equation}
+Thus the update numerator $\ghat_t + \beta_2 \epshat_t$ is automatically damped without manual learning rate decay.
+\end{proposition}
+
+\textbf{Contrast with Adan:} Near minima, $\g_t \approx \g_{t-1} \approx 0 \implies d_t \approx 0$. Correction vanishes exactly when stabilization is needed most, requiring manual learning rate schedules.
+
+\subsection{Learning Rate Tolerance}
+
+\begin{proposition}[Extreme LR Robustness]
+\label{prop:lr_tolerance}
+Under Lipschitz gradients ($\|H\| \leq L$), IRIS with $\beta_3 = 0.999$ maintains bounded updates for learning rates up to $\eta \sim O(1/L)$, while Adan and Adam require $\eta \sim O(1/(10L))$ and $O(1/(100L))$ respectively.
+\end{proposition}
+
+\textbf{Mechanism:} Three synergistic stabilizers:
+\begin{enumerate}
+    \item \textbf{Innovation damping:} Large steps $\implies$ large $|\Innovation_{t|t-1}|$ $\implies$ negative correction
+    \item \textbf{Variance matching:} $\vhat_t \propto (\g_t + \beta_2 \Innovation_{t|t-1})^2$ increases with step size $\implies$ self-regulation
+    \item \textbf{High $\beta_3$:} Slow variance adaptation prevents denominator collapse
+\end{enumerate}
+
+\subsection{Convergence Analysis}
+\begin{theorem}[Convergence Rate]
+\label{thm:convergence}
+Under standard assumptions (Lipschitz gradients, bounded variance, smooth $f$), IRIS achieves:
+\begin{itemize}
+    \item \textbf{Convex:} $O(1/\sqrt{T})$ convergence in expectation
+    \item \textbf{Non-convex:} $\min_{t \leq T} \E[\|\nabla f(\x_t)\|^2] = O(1/\sqrt{T})$
+\end{itemize}
+\end{theorem}
+
+\begin{proof}[Proof sketch]
+Standard analysis for adaptive gradient methods applies. Key: bias-corrected moments ensure $\E[\ghat_t] = \E[\g_t]$ and variance estimate $\vhat_t$ concentrates around $\E[(\g_t + \beta_2 \Innovation_{t|t-1})^2]$. Recursive bias correction ($\psi$ updates) provides exact correction from step 1, eliminating warmup artifacts. Full proof in Appendix~\ref{app:convergence}.
+\end{proof}

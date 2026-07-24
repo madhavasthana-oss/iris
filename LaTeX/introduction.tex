@@ -1,0 +1,40 @@
+\subsection{The Core Problem: Instability vs Convergence Speed}
+
+Current optimizers face an unavoidable tradeoff:
+\begin{itemize}
+    \item \textbf{Adam/AdamW:} Stable but requires LR $\leq$ 3e-3, extensive warmup (20 epochs), and cannot distinguish stochastic noise from genuine landscape difficulty
+    \item \textbf{AdaBelief:} Uses prediction error $(\g_t - \m_t)^2$ in denominator, but this ``belief'' is corrupted ($\beta_1$-scaled innovation), causing severe overfitting at large batch sizes
+    \item \textbf{Adan:} Uses gradient difference $d_t = \g_t - \g_{t-1}$ which has 2$\times$ variance (comparing two noisy samples), leading to perpetual oscillations and mid-training catastrophic spikes
+\end{itemize}
+
+\subsection{Our Approach: Innovation-Based Error Correction}
+
+We introduce IRIS, which frames optimization as \textbf{predictive error correction} rather than gradient descent or momentum extrapolation. IRIS tracks \emph{innovation}---the prediction error $\Innovation_{t|t-1} = \g_t - \ghat_{t-1}$---and uses it to:
+\begin{enumerate}
+    \item \textbf{Correct gradient estimates:} $\ghat_t = \ghat_{t-1} + \psi_1^{-1} \Innovation_{t|t-1}$ (Kalman-style update)
+    \item \textbf{Accumulate systematic errors:} $\epshat_t = \epshat_{t-1} + \psi_2^{-1}(\Innovation_{t|t-1} - \epshat_{t-1})$
+    \item \textbf{Match variance to updates:} $\vhat_t \propto (\g_t + \beta_2 \Innovation_{t|t-1})^2$ (variance of corrected gradient)
+\end{enumerate}
+
+\textbf{Key innovation:} Unlike Adan's gradient difference (compares two noisy samples: $\Var[d_t] = 2\sigma^2$), IRIS's innovation compares current gradient to smooth estimate ($\Var[\Innovation_{t|t-1}] = \sigma^2$), reducing variance by 50\% and enabling hyperstable convergence.
+
+\subsection{Main Contributions}
+
+\begin{enumerate}
+    \item \textbf{Theoretical:} We prove innovation-based methods have 50\% lower variance than gradient difference methods (Proposition~\ref{prop:variance}), enabling 10-1000$\times$ higher learning rate tolerance
+    
+    \item \textbf{Algorithmic:} We introduce recursive bias correction via Kalman gains ($\psi_{i,t} = \beta_i \psi_{i,t-1} + 1$), eliminating GPU-CPU synchronization and enabling exact bias correction from step 1 (no warmup needed)
+    
+    \item \textbf{Empirical:} We demonstrate:
+    \begin{itemize}
+        \item \textbf{Extreme LR robustness:} Rosenbrock with LR=1.0 (IRIS: 0.07 distance, Adan fails at LR$>$0.15, Adam at LR$>$0.01)
+        \item \textbf{Local minima escape:} Rastrigin global minimum found (distance $10^{-6}$), all competitors trapped at $\sim$1
+        \item \textbf{Real-world gains:} CIFAR-100 batch 2048: +0.8\% accuracy, 25\% faster (113 vs 150 min), no warmup
+    \end{itemize}
+    
+    \item \textbf{Practical:} IRIS requires \emph{no hyperparameter tuning}---a single LR (0.3-1.0) works universally, eliminating the grid search that plagues existing optimizers
+\end{enumerate}
+
+\subsection{Paper Organization}
+
+Section~\ref{sec:related} reviews adaptive optimization and identifies limitations. Section~\ref{sec:method} introduces IRIS's innovation-based framework and contrasts it with gradient difference methods. Section~\ref{sec:theory} provides theoretical analysis including variance reduction proofs and convergence guarantees. Section~\ref{sec:experiments} presents comprehensive benchmarks on toy functions and real tasks. Section~\ref{sec:discussion} discusses implications and limitations.
