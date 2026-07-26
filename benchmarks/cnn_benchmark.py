@@ -1,4 +1,4 @@
-import bitsandbytes as bnb  # For LARS
+# import bitsandbytes as bnb  # For LARS
 """
 ResNet18 CIFAR-100 Optimizer Benchmark
 Train with AdamW, IRIS, Adan, AdaBelief, RAdam, Yogi, NAG, or LARS
@@ -27,7 +27,7 @@ import numpy as np
 import wandb
 from typing import Dict, Tuple, Optional
 import random
-
+from iris import IRIS
 # ============================================================================
 # GLOBAL CONFIGURATION
 # ============================================================================
@@ -46,20 +46,19 @@ GRAD_CLIP_MAX_NORM = {
     "radam":     1.0,
     "yogi":      1.0,
     "nag":       5.0,   # SGD-based; typically tolerates larger gradients
-    "lars":      None,  # LARS normalises layers internally -- clipping is redundant
-    "adan":      1.0,   # Adan already has max_grad_norm, but this clips before it sees them
+    "lars":      None,  # LARS normalises layers internally — clipping is redundant
+    "adan":      None,   # Adan already has max_grad_norm, but this clips before it sees them
     "adabelief": 1.0,
 }
 
 # Optimizer configurations
 OPTIMIZER_CONFIGS = {
     "iris": {
-        "lr": 0.018,
-        "betas": (0.98, 0.9995),
-        "beta_lookahead" : 0.92,
-        "eps": 1e-16,
-        "weight_decay": 0.001,
-        "snr_threshold": 4
+        "lr": 0.003,
+        "betas": (0.98, 0.92, 0.99),
+        "eps": 1e-7,
+        "weight_decay": 0.01,
+        "snr_threshold" : None
     },
     "adamw": {
         "lr": 0.004,
@@ -94,7 +93,7 @@ OPTIMIZER_CONFIGS = {
     },
     "adan": {
         "lr": 0.003,
-        "betas": (0.98, 0.92, 0.99),
+        "betas": (0.98, 0.92, 0.9995),
         "eps": 1e-8,
         "weight_decay": 0.0005,
         "max_grad_norm": 1.0,
@@ -120,7 +119,7 @@ LR_SCHEDULE = {
 }
 
 # Experiment tracking
-WANDB_PROJECT = "RESNET18-CIFAR100"
+WANDB_PROJECT = "RESNET18-CIFAR100-26.07.26"
 WANDB_ENTITY = None
 
 
@@ -497,9 +496,8 @@ def train_single_optimizer(optimizer_name: str, optimizer_class=None,
 
     # Create optimizer
     if optimizer_name == "iris":
-        # Remove None values from config
-        iris_config = {k: v for k, v in config.items() if v is not None}
-        optimizer = optimizer_class(model.parameters(), **iris_config)
+    # Don't filter out None values - pass them explicitly
+        optimizer = optimizer_class(model.parameters(), **config)
     elif optimizer_name == "adamw":
         optimizer = torch.optim.AdamW(model.parameters(), **config)
     elif optimizer_name == "radam":
@@ -575,14 +573,14 @@ def train_single_optimizer(optimizer_name: str, optimizer_class=None,
             clip_info = ""
             if grad_clip_max_norm is not None:
                 clip_info = (
-                    f" | ||g||={train_metrics['grad_norm_mean']:.2f} "
+                    f" | ‖g‖={train_metrics['grad_norm_mean']:.2f} "
                     f"clip={train_metrics['grad_clip_ratio']*100:.1f}%"
                 )
             print(f"Epoch {epoch:3d}/{NUM_EPOCHS} | LR: {current_lr:.6f} | "
                   f"Train: {train_metrics['train_acc']:5.2f}% | "
                   f"Test: {test_metrics['test_acc']:5.2f}% | "
                   f"Best: {best_acc:5.2f}% | "
-                  f"2ndM mean={second_moment_stats['second_moment_mean']:.2e}"
+                  f"2ndM μ={second_moment_stats['second_moment_mean']:.2e}"
                   f"{clip_info}")
 
     print(f"\n{'='*80}")
@@ -606,20 +604,20 @@ if __name__ == "__main__":
     # import bitsandbytes as bnb
 
     # Example 1: Train with standard AdamW (built-in PyTorch)
-    # best_acc = train_single_optimizer("adamw")
+    best_acc = train_single_optimizer("adamw")
 
     # Example 2: Train with RAdam (built-in PyTorch)
     # best_acc = train_single_optimizer("radam")
 
     # Example 3: Train with NAG/Nesterov SGD (built-in PyTorch)
-    best_acc = train_single_optimizer("nag")
+    # best_acc = train_single_optimizer("nag")
 
     # Example 4: Train with IRIS
     # from iris import IRIS
     # best_acc = train_single_optimizer("iris", IRIS)
 
     # Example 5: Train with Adan
-    # from adan import Adan
+    # from adan.adan import Adan
     # best_acc = train_single_optimizer("adan", Adan)
 
     # Example 6: Train with AdaBelief
