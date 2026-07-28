@@ -182,7 +182,9 @@ class IRIS(Optimizer):
         Returns:
             Loss if closure provided, otherwise None
         """
-        self._cuda_graph_capture_health_check()
+        # Present on PyTorch >= ~1.12; safe no-op on older installs.
+        if hasattr(self, "_cuda_graph_capture_health_check"):
+            self._cuda_graph_capture_health_check()
 
         loss = None
         if closure is not None:
