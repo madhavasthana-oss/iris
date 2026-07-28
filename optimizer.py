@@ -1,4 +1,5 @@
 """IRIS optimizer: Innovation Residual Iterative Stabilization"""
+
 import torch
 from torch import Tensor
 from torch.optim.optimizer import (
@@ -37,37 +38,37 @@ class IRIS(Optimizer):
         differentiable: Make optimizer differentiable (default: False)
         foreach: Use multi-tensor operations (default: None, auto-detect)
         fused: Use fused CUDA kernel (default: False)
-    
+
     Example:
         >>> optimizer = IRIS(model.parameters(), lr=3e-3)
         >>> optimizer.zero_grad()
         >>> loss.backward()
         >>> optimizer.step()
-    
+
     Reference:
         IRIS: Innovation Residual Iterative Stabilization
         https://arxiv.org/abs/XXXX.XXXXX
     """
-    
+
     def __init__(
         self,
         params: ParamsT,
         lr: float = 3e-3,
-        betas: Tuple[float, float, float] = (0.98, 0.92, 0.99),
+        betas: Tuple[float, float, float] = (0.98, 0.92, 0.9995),
         snr_threshold: Optional[float] = None,
         weight_decay: float = 0.01,
         eps: float = 1e-8,
         amsgrad: bool = False,
         differentiable: bool = False,
         foreach: Optional[bool] = None,
-        fused: bool = False
+        fused: bool = False,
     ):
         if not lr > 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
-        
+
         if snr_threshold is not None and not snr_threshold > 0.0:
             raise ValueError(f"Invalid snr_threshold: {snr_threshold}")
-        
+
         if not 0.0 <= betas[0] < 1.0:
             raise ValueError(f"Invalid beta1: {betas[0]}")
         if not 0.0 <= betas[1] < 1.0:
@@ -115,7 +116,7 @@ class IRIS(Optimizer):
             group.setdefault("psi_1_curr", 0.0)
             group.setdefault("psi_2_curr", 0.0)
             group.setdefault("psi_3_curr", 0.0)
-            
+
             for p in group["params"]:
                 p_state = self.state.get(p, [])
                 if len(p_state) != 0 and not torch.is_tensor(p_state["step"]):
@@ -150,22 +151,32 @@ class IRIS(Optimizer):
 
             if len(state) == 0:
                 state["step"] = torch.zeros(
-                    (), dtype=_get_scalar_dtype(is_fused=group.get("fused", False)), device=p.device
+                    (),
+                    dtype=_get_scalar_dtype(is_fused=group.get("fused", False)),
+                    device=p.device,
                 )
-                state["grad_estimate"] = torch.zeros_like(p, memory_format=torch.preserve_format)
-                state["variance_estimate"] = torch.zeros_like(p, memory_format=torch.preserve_format)
-                
+                state["grad_estimate"] = torch.zeros_like(
+                    p, memory_format=torch.preserve_format
+                )
+                state["variance_estimate"] = torch.zeros_like(
+                    p, memory_format=torch.preserve_format
+                )
+
                 if amsgrad:
-                    state["max_variance_estimate"] = torch.zeros_like(p, memory_format=torch.preserve_format)
-                
-                state["innovation_residual"] = torch.zeros_like(p, memory_format=torch.preserve_format)
+                    state["max_variance_estimate"] = torch.zeros_like(
+                        p, memory_format=torch.preserve_format
+                    )
+
+                state["innovation_residual"] = torch.zeros_like(
+                    p, memory_format=torch.preserve_format
+                )
 
             grad_estimates.append(state["grad_estimate"])
             variance_estimates.append(state["variance_estimate"])
 
             if amsgrad:
                 max_variance_estimates.append(state["max_variance_estimate"])
-            
+
             innovation_residuals.append(state["innovation_residual"])
 
             state_steps.append(state["step"])
@@ -175,10 +186,10 @@ class IRIS(Optimizer):
     @_use_grad_for_differentiable
     def step(self, closure=None):
         """Perform a single optimization step.
-        
+
         Args:
             closure: Closure that reevaluates the model and returns loss
-            
+
         Returns:
             Loss if closure provided, otherwise None
         """
@@ -240,9 +251,10 @@ class IRIS(Optimizer):
                 grad_scale=getattr(self, "grad_scale", None),
                 found_inf=getattr(self, "found_inf", None),
             )
-            
+
             group["psi_1_curr"] = psi_1_curr
             group["psi_2_curr"] = psi_2_curr
             group["psi_3_curr"] = psi_3_curr
 
         return loss
+
