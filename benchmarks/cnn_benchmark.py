@@ -55,7 +55,7 @@ GRAD_CLIP_MAX_NORM = {
 OPTIMIZER_CONFIGS = {
     "iris": {
         "lr": 0.003,
-        "betas": (0.98, 0.92, 0.99),
+        "betas": (0.96, 0.92, 0.9995),
         "eps": 1e-7,
         "weight_decay": 0.01,
         "snr_threshold" : None

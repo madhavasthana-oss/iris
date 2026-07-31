@@ -39,9 +39,9 @@ from adabelief_pytorch import AdaBelief
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
-# ============================================================================
+
 # SEEDING AND REPRODUCIBILITY
-# ============================================================================
+
 
 def set_seed(seed: int):
     """Set all random seeds for complete reproducibility"""
@@ -63,10 +63,8 @@ def set_seed(seed: int):
     return seed_worker
 
 
-# ============================================================================
-# LEARNING RATE SCHEDULER
-# ============================================================================
 
+# LEARNING RATE SCHEDULER
 class CosineDecayWithWarmup:
     """Cosine decay learning rate scheduler with linear warmup"""
     
@@ -116,10 +114,7 @@ class CosineDecayWithWarmup:
         self.current_step = state_dict['current_step']
 
 
-# ============================================================================
 # CONFIGURATION MANAGEMENT
-# ============================================================================
-
 @dataclass
 class BenchmarkConfig:
     """Configuration for benchmark run"""
@@ -190,10 +185,7 @@ class BenchmarkConfig:
             return cls(**json.load(f))
 
 
-# ============================================================================
 # DATASET FACTORY
-# ============================================================================
-
 class DatasetFactory:
     """Factory for loading and preprocessing datasets"""
     
@@ -322,11 +314,7 @@ class DatasetFactory:
         
         return tokenized
 
-
-# ============================================================================
 # MODEL FACTORY
-# ============================================================================
-
 class ModelFactory:
     """Factory for creating transformer models of different sizes"""
     
@@ -523,20 +511,15 @@ class ModelFactory:
         return tokenizer
 
 
-# ============================================================================
-# OPTIMIZER FACTORY
-# ============================================================================
 
+# OPTIMIZER FACTORY
 class OptimizerFactory:
     """Factory for creating optimizers with config loading"""
     
     OPTIMIZER_CLASSES = {
         'adamw': AdamW,
-        'lag': Lag,
-        'grim': Grim,
         'iris': IRIS,
         'adabelief': AdaBelief,
-        'vergil': Vergil,
         'adan': Adan
     }
     
@@ -568,11 +551,7 @@ class OptimizerFactory:
         
         return optimizer
 
-
-# ============================================================================
 # CHECKPOINT MANAGER
-# ============================================================================
-
 class CheckpointManager:
     """Manages saving and loading checkpoints with W&B integration"""
     
@@ -714,10 +693,7 @@ class CheckpointManager:
         return info
 
 
-# ============================================================================
 # TRAINER
-# ============================================================================
-
 class BenchmarkTrainer:
     """Trainer for LLM benchmark experiments"""
     
@@ -1059,11 +1035,7 @@ class BenchmarkTrainer:
         # Close wandb run
         wandb.finish()
 
-
-# ============================================================================
 # MAIN BENCHMARK RUNNER
-# ============================================================================
-
 def run_benchmark(config_path: str):
     """Run benchmark across all seeds"""
     config = BenchmarkConfig.load(config_path)
@@ -1099,10 +1071,7 @@ def run_benchmark(config_path: str):
     print(f"{'='*80}\n")
 
 
-# ============================================================================
 # CLI
-# ============================================================================
-
 def main():
     parser = argparse.ArgumentParser(description='LLM Optimizer Benchmark')
     parser.add_argument('--config', type=str, required=True,

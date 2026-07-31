@@ -36,10 +36,7 @@ import os
 import shutil
 
 
-# ============================================================================
 # GLOBAL CONFIGURATION - MODIFY THESE
-# ============================================================================
-
 # Dataset & Model Configuration
 DATASET = 'imagenet1k'          # 'imagenet1k' | 'imagenet10k' | 'imagenet21k'
 MODEL_ARCH = 'vit_base_patch16_224'   # See MODEL_REGISTRY below
@@ -59,9 +56,7 @@ BATCH_SIZE = 512
 MAX_EPOCHS = 100
 WARMUP_EPOCHS = 10
 
-# --------------------------------------------------------------------------
 # OPTIMIZER SELECTION
-# --------------------------------------------------------------------------
 # Options: 'adamw' | 'adabelief' | 'yogi' | 'adan' | 'sophia' | 'lion' | 'iris'
 OPTIMIZER_NAME = 'adamw'
 
@@ -94,10 +89,8 @@ SOPHIA_UPDATE_FREQ = 10           # Steps between Hessian estimates
 LION_BETAS      = (0.9, 0.99)
 LION_WD         = 0.05
 
-# IRIS extras
-IRIS_SNR_THRESHOLD = 4.0          # rho: trust-region clipping. Higher = more conservative
-IRIS_BETA_RES      = None         # None = standard mode. Set e.g. 0.92 to enable innovation residual
-IRIS_AMSGRAD       = False        # Use max innovation variance for more stable updates
+# IRIS config
+IRIS_BETAS = (0.96, 0.92, 0.9995)
 
 # Layer-wise learning rate decay
 USE_LAYER_DECAY     = True
@@ -137,9 +130,9 @@ CHECKPOINT_MONITOR  = 'val/top1_acc'
 CHECKPOINT_MODE     = 'max'
 
 
-# ============================================================================
+
 # DATASET & MODEL REGISTRY
-# ============================================================================
+
 
 DATASET_CONFIG = {
     'imagenet1k': {
@@ -182,9 +175,9 @@ MODEL_REGISTRY = {
 }
 
 
-# ============================================================================
+
 # LION OPTIMIZER (self-contained fallback -- no external dep needed)
-# ============================================================================
+
 
 class Lion(torch.optim.Optimizer):
     """
@@ -244,11 +237,7 @@ class Lion(torch.optim.Optimizer):
 
         return loss
 
-
-# ============================================================================
 # HELPER FUNCTIONS
-# ============================================================================
-
 def get_dataset_config(dataset_name):
     if dataset_name not in DATASET_CONFIG:
         raise ValueError(f"Unknown dataset: {dataset_name}. Choose from {list(DATASET_CONFIG.keys())}")
@@ -339,11 +328,7 @@ def cleanup_wandb():
         shutil.rmtree(wandb_dir)
         print("✓ Cleaned up previous WandB runs")
 
-
-# ============================================================================
 # PYTORCH LIGHTNING MODULE
-# ============================================================================
-
 class ImageNetViT(pl.LightningModule):
     def __init__(self,
                  model_name: str,
@@ -374,17 +359,17 @@ class ImageNetViT(pl.LightningModule):
         self.criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
         self.epoch_start_time = None
 
-    # ------------------------------------------------------------------
+    # 
     # forward
-    # ------------------------------------------------------------------
+    # 
     def forward(self, x):
         if self.is_hf_model:
             return self.model(x).logits
         return self.model(x)
 
-    # ------------------------------------------------------------------
+    # 
     # steps
-    # ------------------------------------------------------------------
+    # 
     def _accuracy(self, logits, y):
         _, pred = logits.topk(5, 1, True, True)
         pred    = pred.t()
@@ -465,9 +450,9 @@ class ImageNetViT(pl.LightningModule):
         self.log('test/top5_acc', top5, on_step=False, on_epoch=True, sync_dist=True)
         return loss
 
-    # ------------------------------------------------------------------
+    # 
     # optimizer & scheduler
-    # ------------------------------------------------------------------
+    # 
     def configure_optimizers(self):
         # -- Build parameter groups with optional layer-wise LR decay --
         if self.use_layer_decay and self.is_hf_model:
@@ -503,9 +488,9 @@ class ImageNetViT(pl.LightningModule):
             'lr_scheduler': {'scheduler': scheduler, 'interval': 'epoch', 'frequency': 1}
         }
 
-    # ------------------------------------------------------------------
+    # 
     # layer-wise LR decay helpers
-    # ------------------------------------------------------------------
+    # 
     def _get_layer_wise_param_groups_hf(self):
         param_groups = []
         num_layers   = len(self.model.vit.encoder.layer)
@@ -556,9 +541,7 @@ class ImageNetViT(pl.LightningModule):
         })
         return param_groups
 
-    # ------------------------------------------------------------------
     # timing hooks
-    # ------------------------------------------------------------------
     def on_train_epoch_start(self):
         self.epoch_start_time = time.time()
 
@@ -568,10 +551,7 @@ class ImageNetViT(pl.LightningModule):
                      on_epoch=True, sync_dist=True)
 
 
-# ============================================================================
 # DATA MODULE  (unchanged from original)
-# ============================================================================
-
 class ImageNetDataModule(pl.LightningDataModule):
     def __init__(self,
                  data_dir: str,
@@ -666,10 +646,7 @@ class ImageNetDataModule(pl.LightningDataModule):
                           num_workers=self.num_workers, pin_memory=True)
 
 
-# ============================================================================
 # OPTIMIZER FACTORY
-# ============================================================================
-
 def build_optimizer_class_and_kwargs(optimizer_name: str):
     """
     Returns (optimizer_class, kwargs_dict).
@@ -773,7 +750,7 @@ def build_optimizer_class_and_kwargs(optimizer_name: str):
             )
 
         kwargs = {
-            'betas':         OPTIMIZER_BETAS,
+            'betas':         IRIS_BETAS,
             'eps':           OPTIMIZER_EPS,
             'weight_decay':  WEIGHT_DECAY,
             'snr_threshold': IRIS_SNR_THRESHOLD,
@@ -790,10 +767,7 @@ def build_optimizer_class_and_kwargs(optimizer_name: str):
         raise ValueError(f"Unknown optimizer: '{optimizer_name}'. Choose from {valid}")
 
 
-# ============================================================================
 # TRAINING FUNCTION
-# ============================================================================
-
 def train_vit_imagenet(optimizer_class, optimizer_kwargs: dict, config: dict = None):
     """Train Vision Transformer on ImageNet with the specified optimizer."""
 
@@ -895,9 +869,9 @@ def train_vit_imagenet(optimizer_class, optimizer_kwargs: dict, config: dict = N
         wandb.finish()
 
 
-# ============================================================================
+
 # MAIN
-# ============================================================================
+
 
 def main():
     cleanup_wandb()

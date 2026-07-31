@@ -3,170 +3,154 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.0+](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Paper](https://img.shields.io/badge/Paper-arXiv-red.svg)](https://arxiv.org/abs/XXXX.XXXXX)
 
-**IRIS** is an error-correcting optimizer that frames optimization as predictive error correction rather than gradient extrapolation. By tracking innovation (prediction error) and correcting gradient estimates, IRIS achieves superior stability and performance at large batch sizes.
+**IRIS** is an error-correcting optimizer that frames optimization as predictive error correction rather than gradient extrapolation. It tracks *innovation* — the prediction error between the current gradient and a smoothed estimate — and folds that error back into the update.
 
 ```python
 from iris import IRIS
 
-# Replace AdamW
+# Drop-in replacement for AdamW
 optimizer = IRIS(
     model.parameters(), 
     lr=3e-3,
-    betas=(0.98, 0.92, 0.99),    # (beta1, beta2, beta3)
+    betas=(0.96, 0.92, 0.9995),    # (beta1, beta2, beta3)
     weight_decay=0.01
 )
 
-# Training loop
 for batch in dataloader:
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
 ```
 
+The formal writeup (math, proofs, related work) lives in a separate repo: [IRIS-documentation](#) *(link once created)*. This README covers usage and reports what has actually been tested.
+
+---
+
+## Status
+
+IRIS is an active, personal research project — **not** a finished or peer-reviewed result. It's built and tested by one person on limited compute (currently free-tier / low-cost cloud GPUs). Here's what that means concretely:
+
+- Validation so far is limited to **vision tasks** at small-to-moderate scale (CIFAR-10, CIFAR-100). No language modeling, diffusion, or RL experiments have been run yet.
+- Most results reported below come from **1-2 seeds**, not large statistical sweeps. Where only one seed exists, that's stated explicitly.
+- An earlier "heavy-ball" / split-error-correction variant was implemented and explored, then removed entirely from the codebase after it showed no measurable benefit over the standard formulation. It's mentioned here only so the history is transparent — it is not present in the current code.
+- The accompanying paper is unsubmitted and unfinished (see [IRIS-documentation](#)).
+
+If you're evaluating this for research or hiring purposes: treat the results below as promising early signal from a small, honest experiment suite, not as a validated claim of general superiority over AdamW.
+
 ---
 
 ## Why IRIS?
 
-### The Problem with Existing Optimizers
+### The problem with existing optimizers
 
 **Adam/AdamW:**
-- Treats all gradient variance equally (no distinction between noise and curvature)
-- Limited learning rate range (~3e-3 maximum)
-- Requires extensive warmup (10-20 epochs)
+- Treats all gradient variance the same way — no distinction between stochastic noise and genuine landscape difficulty
+- Narrow practical learning-rate range (commonly capped around 3e-3)
+- Typically needs extensive warmup (10-20 epochs) to train stably at scale
 
 **AdaBelief:**
-- Uses belief `(g_t - m_t)^2` which is corrupted innovation (beta1-scaled, biased)
-- **Severe overfitting at large batch sizes**
-- CIFAR-100 batch 2048: Lower loss but **-2% accuracy vs IRIS**
+- Uses `(g_t - m_t)^2` as its "belief" term, which is a β1-scaled, biased version of true innovation, used in the denominator
+- In our one CIFAR-100/ResNet-18 run (batch 2048), AdaBelief reached a lower training loss than IRIS but **2% lower test accuracy**, consistent with overfitting
 
 **Adan:**
-- Uses gradient difference `g_t - g_{t-1}` (instantaneous, noisy)
-- **Diverges without heavy tuning** (learning rate schedules, modified weight decay)
-- Vanishing correction near minima (when `g_t ~= g_{t-1}`)
+- Uses gradient difference `g_t - g_{t-1}`, which compares two noisy samples and has roughly 2× the variance of IRIS's innovation term
+- In our toy-function benchmarks (Rosenbrock, Rastrigin) and CIFAR-100 run, Adan required extensive tuning and still diverged or oscillated; IRIS did not, in the same runs
 
-### The IRIS Solution
+### The IRIS approach
 
-**Innovation-Based Error Correction:**
+**Innovation-based error correction:**
 ```python
-I_t = g_t - g_hat_{t-1}              # Innovation (prediction error)
-eps_hat_t = EMA[I_t]                   # Systematic error
-g_hat_t = g_hat_{t-1} + psi1_inv*I_t        # Corrected gradient estimate
-v_hat_t ~= (g_t + beta2*I_t)^2           # Variance of corrected gradient
+I_t     = g_t - g_hat_{t-1}              # Innovation (prediction error)
+eps_t   = EMA[I_t]                       # Accumulated systematic error
+g_hat_t = g_hat_{t-1} + psi1_inv * I_t   # Corrected gradient estimate
+v_hat_t ~= (g_t + beta2 * I_t)^2         # Variance of the corrected gradient
 ```
 
-**Key advantages:**
-- ✓ **Innovation tracks bias**, not noise (robust to large batches)
-- ✓ **Error correction remains active** near minima (unlike gradient difference)
-- ✓ **Variance matching**: preconditioner matches update numerator
-- ✓ **No warmup required**: exact bias correction from step 1
-- ✓ **25% faster** than AdamW in wall-clock time
+**What this buys, based on testing so far:**
+- Innovation tracks systematic bias rather than raw noise, which is why it holds up better at large batch size in the one setting we've tested (batch 2048, CIFAR-100)
+- The correction term stays active near minima, instead of vanishing the way Adan's gradient difference does — shown on the Rosenbrock/Rastrigin toy landscapes
+- In the CIFAR-100 run, IRIS reached lower test loss and higher test accuracy than AdamW — see [Results](#results) for the actual numbers
+
+An earlier version of this README claimed IRIS trained ~25% faster in wall-clock time than AdamW. That number was an artifact of uneven logging overhead between runs, not a real speed advantage, and has been removed. With logging matched, IRIS was ~21 minutes slower than AdamW in the same run. We're leaving this note here rather than quietly deleting the old claim, since it's exactly the kind of thing that should be traceable if you're deciding whether to trust the rest of this README.
 
 ---
 
-## Key Innovations
+## How it works
 
-### 1. Innovation as Prediction Error
+### 1. Innovation vs. gradient difference
 
-**Adan's gradient difference** (fails):
+**Adan's gradient difference** (compares two noisy samples):
 ```python
-d_t = g_t - g_{t-1}  # Compares two noisy samples
-# Problem: g_t ~= g_{t-1} near minima -> correction vanishes
+d_t = g_t - g_{t-1}
+# Near minima, g_t ~= g_{t-1}, so d_t -> 0 and correction vanishes
 ```
 
-**IRIS's innovation** (robust):
+**IRIS's innovation** (compares to a smooth estimate):
 ```python
-I_t = g_t - g_hat_{t-1}  # Compares to smooth estimate
-# Benefit: g_hat_{t-1} lags near minima -> I_t < 0 -> automatic damping
+I_t = g_t - g_hat_{t-1}
+# Near minima, g_hat_{t-1} still lags, so I_t stays informative
 ```
 
-**Near-minima behavior:**
-```
-Minima: g_t -> 0, but g_hat_{t-1} > 0 (lagging momentum)
-Innovation: I_t = 0 - g_hat_{t-1} < 0 (large negative)
-Update: g_hat_t + beta2*eps_hat_t naturally dampens (self-stabilizing)
-```
+### 2. Direct vs. inverse scaling
 
-### 2. Direct vs Inverse Scaling
-
-**AdaBelief** (inverse scaling):
+**AdaBelief** puts the innovation-like term in the denominator (inverse scaling):
 ```python
-step ~= m_t / sqrt[(g_t - m_t)^2 + eps]  # Innovation in denominator
-# Problem: Division by small numbers when g_t ~= m_t -> instability
+step ~= m_t / sqrt[(g_t - m_t)^2 + eps]
+# Can divide by near-zero values when g_t ~= m_t
 ```
 
-**IRIS** (direct scaling):
+**IRIS** puts it in the numerator (direct scaling):
 ```python
-step ~= (g_hat_t + beta2*eps_hat_t) / sqrt[v_hat_t + eps]  # Innovation in numerator
-# Benefit: Correction modifies direction, not scale -> stable
+step ~= (g_hat_t + beta2*eps_hat_t) / sqrt[v_hat_t + eps]
+# Correction adjusts direction, not the scale of the step
 ```
 
-### 3. Variance Matching
+### 3. Variance matching
 
 ```python
-Numerator:   g_hat_t + beta2*eps_hat_t           # What we're stepping with
-Denominator: sqrt[(g_t + beta2*I_t)^2 + eps] # Variance of what we're stepping with
+numerator   = g_hat_t + beta2 * eps_hat_t   # what we step with
+denominator = sqrt[(g_t + beta2*I_t)^2]     # variance of what we step with
 ```
 
-The variance term estimates uncertainty of the **corrected gradient**, not raw gradient. This ensures preconditioner scale matches update scale.
+The denominator estimates uncertainty of the *corrected* gradient, not the raw one, so the preconditioner scale matches what's actually being applied.
 
-### 4. Recursive Bias Correction (Kalman-Inspired)
+### 4. Recursive bias correction (Kalman-inspired)
 
 ```python
-# Standard Adam (requires GPU-CPU sync)
-bias_correction = 1 - beta1**t  # Needs integer t from GPU
+# Standard Adam: needs an integer step count from the GPU
+bias_correction = 1 - beta1**t
 
-# IRIS (CPU-only, no sync)
-psi1_t = beta1*psi1_{t-1} + 1   # Recursive accumulation
-psi1_inv = 1/psi1_t             # Kalman gain
+# IRIS: purely recursive, no GPU->CPU sync
+psi1_t   = beta1 * psi1_{t-1} + 1
+psi1_inv = 1 / psi1_t
 ```
 
-**Equivalence to Kalman filter:**
-```
-psi1_inv = (1/beta1) / (1/psi1_{t-1} + 1/beta1)  ==  K_t = P_{t-1}/(P_{t-1} + R)
-```
+This is algebraically a Kalman gain with static measurement noise. It removes the GPU-CPU synchronization Adam-style bias correction requires and gives exact bias correction from step 1. That does **not** mean warmup is unnecessary in general — our CIFAR-100 run happened to use none, but we haven't run the controlled comparison (same run, with vs. without warmup) needed to say whether IRIS benefits from one. Preliminary indications are that it can. Treat this as an open question, not a settled advantage.
 
-**Benefits:**
-- No GPU-CPU synchronization
-- No power computation
-- Exact bias correction from step 1
-- **No warmup needed**
-
-### 5. Timescale Separation
+### 5. Timescale separation
 
 ```python
-beta1 = 0.98  ->  tau_gradient ~= 50 steps   (slow: tracks true gradient)
-beta2 = 0.92  ->  tau_error ~= 12 steps      (fast: reacts to errors quickly)
+beta1 = 0.98  ->  tracks the gradient over ~50 steps (slow)
+beta2 = 0.92  ->  reacts to error over ~12 steps      (fast)
 ```
 
-**Why beta2 < beta1 (by 0.15-0.25)?**
-- Error correction must adapt **faster** than the error itself
-- If beta2 ~= beta1: always chasing, never catching
-- If beta2 << beta1: can correct before next drift
-
-This is **hierarchical adaptive control**: fast inner loop stabilizes, slow outer loop tracks.
+`beta2` needs to sit meaningfully below `beta1` (empirically, 0.15-0.25 lower) so error correction adapts faster than the error itself. If the two timescales are too close, the correction chases rather than catches.
 
 ---
 
 ## Installation
 
+From source (no PyPI package yet):
 ```bash
-pip install iris-optimizer  # Coming soon
-```
-
-Or from source:
-```bash
-git clone https://github.com/yourusername/iris.git
+git clone https://github.com/madhavasthana-oss/iris.git
 cd iris
 pip install -e .
 ```
 
 ---
 
-## Quick Start
-
-### Basic Usage
+## Quick start
 
 ```python
 import torch
@@ -176,13 +160,12 @@ model = YourModel()
 
 optimizer = IRIS(
     model.parameters(),
-    lr=3e-3,                      # Learning rate
-    betas=(0.98, 0.92, 0.99),     # (beta1, beta2, beta3)
-    weight_decay=0.01,            # Decoupled weight decay
-    eps=1e-8                      # Numerical stability
+    lr=3e-3,
+    betas=(0.98, 0.92, 0.99),
+    weight_decay=0.01,
+    eps=1e-8
 )
 
-# Training loop
 for batch in dataloader:
     optimizer.zero_grad()
     loss = model(batch)
@@ -190,109 +173,100 @@ for batch in dataloader:
     optimizer.step()
 ```
 
-### With Optional SNR Clipping
+### Optional SNR-based clipping
 
 ```python
 optimizer = IRIS(
     model.parameters(),
     lr=3e-3,
     betas=(0.98, 0.92, 0.99),
-    snr_threshold=4.0,      # Enable trust-region clipping
+    snr_threshold=4.0,   # enables trust-region clipping
     weight_decay=0.01
 )
 ```
 
 ---
 
-## Hyperparameter Guide
+## Hyperparameter guide
 
-### Learning Rate (`lr`)
+### Learning rate
 
-**Typical ranges:**
-| Task | Recommended LR |
-|------|----------------|
-| Vision (ResNet/ViT) | 3e-3 to 1e-2 |
-| Language (BERT/GPT) | 1e-3 to 5e-3 |
-| Fine-tuning | 1e-4 to 1e-3 |
-| Large-batch (>=2048) | 3e-3 to 1e-2 |
+We have only tuned and tested learning rate in the **vision** settings listed under [Results](#results) (CIFAR-10/100, batch sizes up to 2048). For those settings, `3e-3` to `1e-2` has worked well. We have **not** tested IRIS on language models, diffusion models, or fine-tuning, so no LR guidance is given for those regimes — if you try it there, we'd genuinely like to know what you find.
 
-### Beta Values (`betas`)
+### Betas
 
 ```python
 betas = (beta1, beta2, beta3)
 ```
+Default: `(0.98, 0.92, 0.99)`, used in all reported results below.
 
-**Default: `(0.98, 0.92, 0.99)`**
+- **beta1** — gradient estimate EMA (typically 0.9-0.99). Higher = smoother, slower adaptation.
+- **beta2** — innovation residual EMA (typically 0.8-0.95). Must sit 0.15-0.25 below beta1 for timescale separation; lower = faster correction.
+- **beta3** — variance EMA (typically 0.99-0.9995). Higher = more stable variance estimates.
 
-- **beta1**: Gradient estimate EMA (0.9-0.99)
-  - Higher = smoother, slower adaptation
-  
-- **beta2**: Innovation residual EMA (0.8-0.95)
-  - **Must be 0.15-0.25 lower than beta1** for timescale separation
-  - Lower = faster error correction
-  
-- **beta3**: Variance EMA (0.99-0.9995)
-  - Higher = more stable variance estimates
+### SNR threshold (`snr_threshold`)
 
-**Important:** beta2 < beta1 is **not optional**. Error correction requires faster timescale.
-
-### SNR Threshold (`snr_threshold`)
-
-Controls trust-region clipping:
-
+Controls optional trust-region clipping:
 ```python
-denominator = rho*sqrt(v_hat_t) + eps
+denominator = rho * sqrt(v_hat_t) + eps
 ```
 
-| Value | Use Case |
-|-------|----------|
-| `None` | No clipping (pure preconditioned gradient) |
-| `4.0` | Conservative (4-sigma confidence) |
-| `2.0` | Moderate |
+| Value | Effect |
+|-------|--------|
+| `None` (default) | No clipping |
+| `4.0` | Conservative, used if training is unstable |
+| `2.0` | More aggressive clipping |
 
-**Default:** `None` (no clipping). Add `snr_threshold=4.0` if training is unstable.
+We have not systematically swept this parameter — the default `None` is what all reported results use unless stated otherwise.
 
-### Weight Decay (`weight_decay`)
+### Weight decay
 
-Decoupled weight decay (AdamW-style):
+Decoupled, AdamW-style:
 ```python
-theta_t = (1 - eta*lambda)*theta_{t-1} - eta*update
+theta_t = (1 - eta*lambda) * theta_{t-1} - eta * update
 ```
-
-**Typical values:** 0.01 to 0.1
+Typical values: 0.01-0.1. Not swept beyond the default `0.01` used in reported results.
 
 ---
 
-## Performance Results
+## Results
 
-### CIFAR-100, ResNet-18, Batch 2048, 200 Epochs
+Everything below is what has actually been run, with seed counts stated. This section will be updated as more experiments complete — see [Status](#status) for what's still missing.
 
-| Optimizer | Warmup | Final Acc | Training Time |
-|-----------|--------|-----------|---------------|
-| AdamW | 20 epochs | 73.0% | 150 min |
-| AdaBelief | 20 epochs | **71.5%** ✗ | ~150 min |
-| Adan | 10-20 epochs | <73% (diverged) | N/A |
-| **IRIS** | **None** | **73.8%** ✓ | **113 min** |
+### CIFAR-100, ResNet-18, batch 2048, 200 epochs (1 run)
 
-**Key takeaways:**
-- ✓ **+0.8% accuracy** over AdamW
-- ✓ **25% faster** wall-clock time (113 vs 150 min)
-- ✓ **No warmup** required
-- ✓ **50% less warmup** than competitors when warmup used
-- ✗ AdaBelief overfits (lower loss, worse accuracy)
-- ✗ Adan diverged despite extensive tuning
+| Optimizer | Warmup used | Final Test Acc | Train Time |
+|-----------|-------------|-----------------|------------|
+| AdamW | 20 epochs | 73.0% | ~150 min |
+| AdaBelief | 20 epochs | 71.5% | ~150 min |
+| Adan | 10-20 epochs | <73%, diverged | — |
+| **IRIS** | None | **73.8%** | ~171 min |
 
-### Why IRIS is Faster
+Single run per optimizer, not yet repeated across seeds — treat as early signal, not a confirmed effect size. IRIS reached higher accuracy without warmup in this run, but this compares "IRIS, no warmup" against "AdamW, 20-epoch warmup," not a controlled ablation — we haven't yet tested IRIS with warmup, or AdamW without it, in the same run.
 
-**Computational optimizations:**
-1. **Innovation reuse**: `I_t = g_t - g_hat_{t-1}` computed once, used 3 times
-2. **Fused kernels**: `lerp_()` for innovation update
-3. **No GPU-CPU sync**: Recursive bias correction
-4. **Single addcdiv**: Fused parameter update
+**On training time:** an earlier version of this table reported IRIS as ~25% faster (113 min vs. 150 min). That gap turned out to be a logging-overhead artifact, not a real difference in optimizer speed. With logging matched, IRIS was **~21 minutes slower** than AdamW in this run, while reaching ~0.8 points higher test accuracy. We're keeping this correction visible rather than just fixing the number silently.
 
-**Memory efficiency:**
-- Same as Adam: 2 state buffers (g_hat, v_hat) + 1 temporary (eps_hat)
-- 25% less than Adan (3 vs 4 buffers)
+### CIFAR (ResNet family), 2 seeds, AdamW vs. IRIS
+
+Same architecture and hyperparameters across both optimizers, run at seeds `42` and `3407`. IRIS reached a lower final test loss than AdamW on both seeds (~1.68-1.70 vs. ~1.87-1.89), with the gap consistent in direction across seeds. Test accuracy showed a similar, smaller edge for IRIS. Raw WandB logs available on request / linked in the docs repo.
+
+This is 2 seeds, not a large sweep — enough to say the direction is consistent, not enough to claim a precise effect size.
+
+### Toy optimization landscapes
+
+On Rosenbrock and Rastrigin, IRIS tolerated learning rates roughly 10-1000× higher than Adam-family optimizers before diverging, and was the only optimizer tested that reached the global minimum on Rastrigin. Full numbers are in the paper (IRIS-documentation repo).
+
+### In progress
+
+- **ViT-Small, CIFAR-100** — currently running, no results yet.
+- **CNN, CIFAR-10** — currently running, no results yet.
+- **Large-batch stress test** (pushing batch size well past 2048 to test the core claim directly) — planned.
+
+### Not yet attempted
+
+- Language modeling (any scale)
+- Diffusion models
+- Anything beyond CIFAR-scale vision (e.g. ImageNet or subsets like Tiny-ImageNet)
 
 ---
 
@@ -304,52 +278,51 @@ psi1_t = beta1*psi1_{t-1} + 1
 psi2_t = beta2*psi2_{t-1} + 1
 psi3_t = beta3*psi3_{t-1} + 1
 
-# Innovation (prediction error)
+# Innovation
 I_t = g_t - g_hat_{t-1}
 
-# Update gradient estimate
-g_hat_t = g_hat_{t-1} + psi1_inv*I_t
+# Gradient estimate
+g_hat_t = g_hat_{t-1} + psi1_inv * I_t
 
-# Update innovation residual (error accumulation)
-eps_hat_t = eps_hat_{t-1} + psi2_inv*(I_t - eps_hat_{t-1})
+# Innovation residual (error accumulation)
+eps_hat_t = eps_hat_{t-1} + psi2_inv * (I_t - eps_hat_{t-1})
 
 # Variance of corrected gradient
 Sigma_t = (g_t + beta2*I_t)^2 - v_hat_{t-1}
-v_hat_t = v_hat_{t-1} + psi3_inv*Sigma_t
+v_hat_t = v_hat_{t-1} + psi3_inv * Sigma_t
 
 # Parameter update
-numerator = g_hat_t + beta2*eps_hat_t
+numerator   = g_hat_t + beta2*eps_hat_t
 denominator = sqrt(v_hat_t) + eps
 theta_t = (1 - eta*lambda)*theta_{t-1} - eta*(numerator / denominator)
 ```
 
-With optional clipping:
+With optional SNR clipping:
 ```python
 update = clip(numerator / (rho*sqrt(v_hat_t) + eps), -1, 1)
 theta_t = (1 - eta*lambda)*theta_{t-1} - eta*update
 ```
 
+This matches the current implementation in `functional.py` exactly — the earlier split-error-correction / heavy-ball variant described in older versions of this repo has been fully removed from the code and is not reflected above.
+
 ---
 
-## Comparison with Other Optimizers
+## Comparison with other optimizers
 
 | Property | Adam | AdaBelief | Adan | IRIS |
 |----------|------|-----------|------|------|
-| **Core quantity** | g_t | g_t - m_t | g_t - g_{t-1} | g_t - g_hat_{t-1} |
-| **Interpretation** | Raw gradient | Corrupted innovation | Gradient velocity | Innovation |
-| **Theoretical framework** | Variance-based | Prediction error (biased) | Nesterov acceleration | Error correction |
-| **Near-minima behavior** | OK | Overfits | Correction vanishes | **Active damping** |
-| **Information used** | Current only | Current + biased past | Two samples | Current + smooth estimate |
-| **Variance target** | Var[g] | Var[g - m_t] | Complex | **Var[g + beta2*I]** |
-| **Memory buffers** | 2 | 2 | 4 | **3** |
-| **Warmup needed** | Yes (20ep) | Yes (20ep) | Yes (10-20ep) | **No** |
-| **Large-batch (2048)** | OK | ✗ Overfits | ✗ Diverges | ✓ **Excels** |
+| Core quantity | `g_t` | `g_t - m_t` | `g_t - g_{t-1}` | `g_t - g_hat_{t-1}` |
+| Interpretation | Raw gradient | Biased innovation | Gradient velocity | Innovation |
+| Near-minima behavior | — | Overfit (observed, 1 run) | Correction vanishes | Stays active (observed, toy landscapes) |
+| Memory buffers | 2 | 2 | 4 | 3 |
+| Warmup used in our CIFAR-100 run | Yes (20 ep) | Yes (20 ep) | Yes (10-20 ep) | None — untested whether IRIS needs it in general |
+| Batch 2048, CIFAR-100 (1 run) | 73.0% acc | 71.5% acc | Diverged | 73.8% acc, ~21 min slower than AdamW |
 
 ---
 
-## Advanced Usage
+## Advanced usage
 
-### Mixed Precision Training
+### Mixed precision
 
 ```python
 from torch.cuda.amp import autocast, GradScaler
@@ -360,14 +333,13 @@ scaler = GradScaler()
 for batch in dataloader:
     with autocast():
         loss = model(batch)
-    
     scaler.scale(loss).backward()
     scaler.step(optimizer)
     scaler.update()
     optimizer.zero_grad()
 ```
 
-### Learning Rate Schedules
+### Learning rate schedules
 
 ```python
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -380,107 +352,67 @@ for epoch in range(num_epochs):
     scheduler.step()
 ```
 
-**Note:** IRIS doesn't require warmup, but can still benefit from schedules.
+Our one CIFAR-100 run didn't use warmup, but we haven't run the controlled comparison to know whether IRIS generally benefits from warmup or schedules — preliminary indications are that it might. Don't take the absence of warmup in that run as a recommendation against using one.
 
-### AMSGrad Variant
+### AMSGrad variant
 
 ```python
 optimizer = IRIS(
     model.parameters(),
     lr=3e-3,
     betas=(0.98, 0.92, 0.99),
-    amsgrad=True  # Use maximum variance
+    amsgrad=True
 )
 ```
+
+Implemented and available; not separately benchmarked yet.
 
 ---
 
 ## FAQ
 
-**Q: Is IRIS a drop-in replacement for Adam?**
+**Is IRIS a drop-in replacement for Adam?**
+Mechanically yes — same interface. Whether it's a strict improvement for your task is untested outside the settings in [Results](#results).
 
-A: Yes! Just change the import and optimizer name. Consider increasing LR slightly.
+**Do I need warmup?**
+Unclear. Our one CIFAR-100 run didn't use it and still trained stably, but we haven't run the controlled ablation, and early indications suggest IRIS can benefit from warmup in at least some settings. Try it both ways for your task rather than assuming it's unnecessary.
 
-**Q: Do I need warmup?**
+**Why does beta2 need to be lower than beta1?**
+Error correction has to adapt faster than the error itself, or the correction always lags. This is a design constraint from the derivation, not an empirical tuning finding.
 
-A: No. IRIS uses recursive bias correction (Kalman-inspired) that provides exact correction from step 1.
+**What's the difference from AdaBelief?**
+AdaBelief's `g_t - m_t` uses the *current* momentum (a look-ahead) and puts it in the denominator. IRIS's `g_t - g_hat_{t-1}` uses only the *previous* estimate (causal) and puts it in the numerator.
 
-**Q: Why beta2 < beta1?**
+**What's the difference from Adan?**
+Adan compares two noisy gradient samples directly, which has higher variance and vanishes near minima. IRIS compares to a smoothed estimate instead.
 
-A: Error correction must adapt faster than the error itself. This timescale separation is critical for stability.
+**Can I use gradient clipping alongside `snr_threshold`?**
+You can, but they overlap in function — using both may over-constrain updates. Not something we've tested combinations of.
 
-**Q: When should I use `snr_threshold`?**
-
-A: Start without it. Add `snr_threshold=4.0` if you see instability or want more conservative updates.
-
-**Q: What's the difference from AdaBelief?**
-
-AdaBelief uses `g_t - m_t` (belief) which is beta1-scaled, biased innovation:
-- Uses **updated** momentum m_t (look-ahead bias)
-- Innovation in **denominator** (inverse scaling, unstable)
-- (1-beta1) signal attenuation
-
-IRIS uses `g_t - g_hat_{t-1}` (innovation) which is clean prediction error:
-- Uses **previous** estimate g_hat_{t-1} (causal)
-- Innovation in **numerator** (direct scaling, stable)
-- No signal attenuation
-
-**Q: What's the difference from Adan?**
-
-Adan uses `g_t - g_{t-1}` (gradient difference):
-- Compares two **noisy samples** (high variance)
-- Vanishes near minima (g_t ~= g_{t-1})
-- Requires storing previous gradient
-
-IRIS uses `g_t - g_hat_{t-1}` (innovation):
-- Compares to **smooth estimate** (low variance)
-- Active damping near minima (g_hat_{t-1} lags)
-- No gradient storage needed
-
-**Q: Can I use gradient clipping?**
-
-A: Yes, but IRIS has optional internal per-coordinate clipping (`snr_threshold`). Using both may be overly conservative.
-
----
-
-## Citation
-
-```bibtex
-@article{yourname2025iris,
-  title={IRIS: Innovation Residual Iterative Stabilization},
-  author={Your Name},
-  journal={arXiv preprint arXiv:XXXX.XXXXX},
-  year={2025}
-}
-```
+**Has this been tested outside vision?**
+No. See [Status](#status).
 
 ---
 
 ## Contributing
 
-Contributions welcome! Areas of interest:
-- Benchmarks on diverse tasks (NLP, RL, generative models)
-- Ablation studies (beta2/beta1 ratio, variance formulation)
-- Theoretical analysis (convergence proofs, regret bounds)
-- Kernel optimizations (Triton, custom CUDA)
-
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+This is a small, early-stage project and outside input is genuinely welcome, especially:
+- Runs on tasks outside vision (NLP, RL, generative models)
+- Independent reproduction of the CIFAR-100 / toy-landscape results
+- Ablations (beta2/beta1 ratio, variance formulation)
+- Convergence/regret-bound analysis beyond what's in the current draft paper
 
 ---
 
 ## License
 
-MIT License - see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
 
 ---
 
 ## Acknowledgments
 
-- **Adam/AdamW** - Foundation for adaptive optimization
-- **AdaBelief** - Highlighted importance of prediction error (though in denominator)
-- **Adan** - Motivation for going beyond raw gradients
-- **Kalman Filter Theory** - Recursive estimation framework
-
----
-
-**Optimize with error correction. Track innovation, correct systematically.**
+- **Adam/AdamW** — the baseline this work is measured against throughout
+- **AdaBelief** — motivated thinking carefully about what "prediction error" should mean in an optimizer
+- **Adan** — motivated moving beyond raw gradient differences
+- **Kalman filter theory** — the recursive-estimation framing behind the bias-correction scheme
