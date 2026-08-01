@@ -97,9 +97,9 @@ __global__ void iris_kernel(
             max_var_est = fmax(static_cast<float>(max_var_est),
                                static_cast<float>(var_est));
             max_variance_estimates[i] = max_var_est;
-            denom = sqrt(static_cast<float>(max_var_est)) + eps;
+            denom = sqrt(static_cast<float>(max_var_est));
         } else {
-            denom = sqrt(static_cast<float>(var_est)) + eps;
+            denom = sqrt(static_cast<float>(var_est));
         }
 
         // Decoupled weight decay
@@ -110,12 +110,12 @@ __global__ void iris_kernel(
         // Parameter update
         const scalar_t numerator = grad_est + beta2 * innov_res;
         if (use_clipping) {
-            const scalar_t denom_clipped = denom * rho;
+            const scalar_t denom_clipped = denom * rho  + eps;
             scalar_t update = numerator / denom_clipped;
             update = clamp(update, -scalar_t1, scalar_t1);
             param -= lr * update;
         } else {
-            param -= lr * (numerator / denom);
+            param -= lr * (numerator / (denom + eps));
         }
 
         params[i] = param;
