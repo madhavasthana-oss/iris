@@ -4,7 +4,6 @@ ResNet18 CIFAR-100 Optimizer Benchmark
 Train with AdamW, IRIS, Adan, AdaBelief, RAdam, Yogi, NAG, or LARS
 
 USAGE:
-from iris import IRIS
 from adan import Adan
 from adabelief_pytorch import AdaBelief
 
@@ -27,10 +26,10 @@ import numpy as np
 import wandb
 from typing import Dict, Tuple, Optional
 import random
-from iris import IRIS
-# ============================================================================
+import pickle
+import os
+
 # GLOBAL CONFIGURATION
-# ============================================================================
 
 SEED = 42
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -54,17 +53,17 @@ GRAD_CLIP_MAX_NORM = {
 # Optimizer configurations
 OPTIMIZER_CONFIGS = {
     "iris": {
-        "lr": 0.003,
-        "betas": (0.96, 0.92, 0.9995),
+        "lr": 0.002,
+        "betas": (0.96, 0.92, 0.99),
         "eps": 1e-7,
-        "weight_decay": 0.01,
+        "weight_decay": 0.0005,
         "snr_threshold" : None
     },
     "adamw": {
-        "lr": 0.004,
+        "lr": 0.001,
         "betas": (0.9, 0.999),
         "eps": 1e-8,
-        "weight_decay": 0.001,
+        "weight_decay": 0.0005,
     },
     "radam": {
         "lr": 0.003,
@@ -92,8 +91,8 @@ OPTIMIZER_CONFIGS = {
         # eta and max_norm are LARS-specific (bitsandbytes)
     },
     "adan": {
-        "lr": 0.003,
-        "betas": (0.98, 0.92, 0.9995),
+        "lr": 0.001,
+        "betas": (0.96, 0.92, 0.9995),
         "eps": 1e-8,
         "weight_decay": 0.0005,
         "max_grad_norm": 1.0,
@@ -101,10 +100,10 @@ OPTIMIZER_CONFIGS = {
         "foreach": False,
     },
     "adabelief": {
-        "lr": 0.003,
+        "lr": 0.001,
         "betas": (0.9, 0.999),
         "eps": 1e-8,
-        "weight_decay": 0.01,
+        "weight_decay": 0.0005,
         "weight_decouple": True,
         "rectify": False,
         "amsgrad": False,
@@ -122,10 +121,7 @@ LR_SCHEDULE = {
 WANDB_PROJECT = "RESNET18-CIFAR100-26.07.26"
 WANDB_ENTITY = None
 
-
-# ============================================================================
 # SEEDING
-# ============================================================================
 
 def set_seed(seed: int):
     """Set random seeds for reproducibility"""
@@ -137,9 +133,7 @@ def set_seed(seed: int):
     torch.backends.cudnn.benchmark = False
 
 
-# ============================================================================
 # MODEL DEFINITION (ResNet18)
-# ============================================================================
 
 class BasicBlock(nn.Module):
     expansion = 1
@@ -202,48 +196,66 @@ class ResNet18(nn.Module):
         return out
 
 
-# ============================================================================
 # DATA LOADING
-# ============================================================================
 
 def get_dataloaders(batch_size: int, num_workers: int) -> Tuple[DataLoader, DataLoader]:
-    """Create CIFAR-100 dataloaders with standard augmentation"""
+    """Create CIFAR-100 dataloaders from cached Kaggle dataset"""
+    import kagglehub
+    from torch.utils.data import TensorDataset
 
-    transform_train = transforms.Compose([
-        transforms.RandomCrop(32, padding=4),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)),
-    ])
+    # Download/use cached dataset
+    path = kagglehub.dataset_download("fedesoriano/cifar100")
+    print("Path to dataset files:", path)
 
-    transform_test = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)),
-    ])
+    def load_cifar100_batch(filepath):
+        with open(filepath, 'rb') as f:
+            d = pickle.load(f, encoding='bytes')
+        data = d[b'data'].reshape(-1, 3, 32, 32).astype(np.float32) / 255.0
+        labels = np.array(d[b'fine_labels'])
+        return data, labels
 
-    trainset = torchvision.datasets.CIFAR100(
-        root='./data', train=True, download=True, transform=transform_train
-    )
-    testset = torchvision.datasets.CIFAR100(
-        root='./data', train=False, download=True, transform=transform_test
-    )
+    train_data, train_labels = load_cifar100_batch(os.path.join(path, 'train'))
+    test_data,  test_labels  = load_cifar100_batch(os.path.join(path, 'test'))
 
-    trainloader = DataLoader(
-        trainset, batch_size=batch_size, shuffle=True,
-        num_workers=num_workers, pin_memory=True
-    )
-    testloader = DataLoader(
-        testset, batch_size=batch_size, shuffle=False,
-        num_workers=num_workers, pin_memory=True
-    )
+    # Normalize
+    mean = np.array([0.5071, 0.4867, 0.4408], dtype=np.float32)[:, None, None]
+    std  = np.array([0.2675, 0.2565, 0.2761], dtype=np.float32)[:, None, None]
+    train_data = (train_data - mean) / std
+    test_data  = (test_data  - mean) / std
+
+    # Augmentation for training (random crop + horizontal flip)
+    class AugmentedDataset(torch.utils.data.Dataset):
+        def __init__(self, data, labels, augment=False):
+            self.data    = torch.tensor(data)
+            self.labels  = torch.tensor(labels, dtype=torch.long)
+            self.augment = augment
+
+        def __len__(self):
+            return len(self.labels)
+
+        def __getitem__(self, idx):
+            x, y = self.data[idx], self.labels[idx]
+            if self.augment:
+                # Random crop: pad 4, then crop back to 32x32
+                x = F.pad(x, [4, 4, 4, 4], mode='reflect')
+                i = random.randint(0, 8)
+                j = random.randint(0, 8)
+                x = x[:, i:i+32, j:j+32]
+                if random.random() > 0.5:
+                    x = x.flip(-1)  # horizontal flip
+            return x, y
+
+    trainset = AugmentedDataset(train_data, train_labels, augment=True)
+    testset  = AugmentedDataset(test_data,  test_labels,  augment=False)
+
+    trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True,
+                             num_workers=num_workers, pin_memory=True)
+    testloader  = DataLoader(testset,  batch_size=batch_size, shuffle=False,
+                             num_workers=num_workers, pin_memory=True)
 
     return trainloader, testloader
 
-
-# ============================================================================
 # LEARNING RATE SCHEDULING
-# ============================================================================
-
 def get_lr(epoch: int, base_lr: float) -> float:
     """Get learning rate with warmup and cosine annealing"""
     warmup_epochs = LR_SCHEDULE['warmup_epochs']
@@ -256,94 +268,7 @@ def get_lr(epoch: int, base_lr: float) -> float:
         return min_lr + (base_lr - min_lr) * 0.5 * (1 + np.cos(np.pi * progress))
 
 
-# ============================================================================
-# SECOND MOMENT TRACKING
-# ============================================================================
-
-def compute_second_moment_stats(optimizer: torch.optim.Optimizer,
-                                optimizer_name: str,
-                                beta2: Optional[float]) -> Dict[str, float]:
-    """Compute bias-corrected second moment statistics across all parameters"""
-    total_second_moment = 0
-    total_params = 0
-    second_moments = []
-
-    # Skip second moment tracking for optimizers without variance states
-    if optimizer_name in ["nag", "lars"]:
-        return {
-            'second_moment_mean': 0.0,
-            'second_moment_std': 0.0,
-            'second_moment_min': 0.0,
-            'second_moment_max': 0.0,
-            'second_moment_median': 0.0,
-        }
-
-    for group in optimizer.param_groups:
-        for p in group['params']:
-            if p.grad is None:
-                continue
-
-            state = optimizer.state.get(p, {})
-            if len(state) == 0:
-                continue
-
-            # Get the step count for this parameter (for bias correction)
-            step = state.get('step', 0)
-            if step == 0:
-                continue
-
-            # Compute bias correction factor: 1 / (1 - beta2^step)
-            if beta2 is not None:
-                bias_correction = 1.0 / (1.0 - beta2 ** step)
-            else:
-                bias_correction = 1.0
-
-            # Handle different optimizer state variable names
-            second_moment_key = None
-            if 'exp_avg_sq' in state:  # Adam, AdamW, RAdam
-                second_moment_key = 'exp_avg_sq'
-            elif 'iniristion_var' in state:  # IRIS
-                second_moment_key = 'iniristion_var'
-            elif 's' in state:  # AdaBelief
-                second_moment_key = 's'
-            elif 'v' in state:  # Yogi
-                second_moment_key = 'v'
-            elif 'exp_avg_var' in state:  # Adan
-                second_moment_key = 'exp_avg_var'
-
-            if second_moment_key:
-                # Apply bias correction to get true second moment estimate
-                second_moment = state[second_moment_key] * bias_correction
-
-                # Collect statistics
-                second_moments.extend(second_moment.view(-1).cpu().tolist())
-                total_second_moment += second_moment.sum().item()
-                total_params += second_moment.numel()
-
-    if total_params == 0:
-        return {
-            'second_moment_mean': 0.0,
-            'second_moment_std': 0.0,
-            'second_moment_min': 0.0,
-            'second_moment_max': 0.0,
-            'second_moment_median': 0.0,
-        }
-
-    second_moments = np.array(second_moments)
-
-    return {
-        'second_moment_mean': total_second_moment / total_params,
-        'second_moment_std': float(np.std(second_moments)),
-        'second_moment_min': float(np.min(second_moments)),
-        'second_moment_max': float(np.max(second_moments)),
-        'second_moment_median': float(np.median(second_moments)),
-    }
-
-
-# ============================================================================
 # TRAINING AND EVALUATION
-# ============================================================================
-
 def train_epoch(model: nn.Module, optimizer: torch.optim.Optimizer,
                 trainloader: DataLoader, criterion: nn.Module,
                 epoch: int, grad_clip_max_norm: Optional[float]) -> Dict[str, float]:
@@ -378,7 +303,6 @@ def train_epoch(model: nn.Module, optimizer: torch.optim.Optimizer,
             grad_norm_sum += total_norm.item()
             if total_norm.item() > grad_clip_max_norm:
                 clip_count += 1
-        # ----------------------------------------------------------------------
 
         optimizer.step()
 
@@ -426,9 +350,7 @@ def evaluate(model: nn.Module, testloader: DataLoader,
     }
 
 
-# ============================================================================
 # MAIN TRAINING FUNCTION
-# ============================================================================
 
 def train_single_optimizer(optimizer_name: str, optimizer_class=None,
                           custom_config: Optional[Dict] = None):
@@ -461,14 +383,6 @@ def train_single_optimizer(optimizer_name: str, optimizer_class=None,
     config = OPTIMIZER_CONFIGS[optimizer_name].copy()
     if custom_config:
         config.update(custom_config)
-
-    # Extract beta2 for bias correction (handle different beta configurations)
-    beta2 = None
-    if optimizer_name == "adan":
-        beta2 = config['betas'][2]  # Adan uses 3 betas
-    elif optimizer_name in ["iris", "adamw", "adabelief", "radam", "yogi"]:
-        beta2 = config['betas'][1]  # These use 2 betas
-    # NAG and LARS don't use betas
 
     # Initialize wandb
     run_name = f"{optimizer_name}_lr{config['lr']}"
@@ -542,9 +456,6 @@ def train_single_optimizer(optimizer_name: str, optimizer_class=None,
         )
         test_metrics = evaluate(model, testloader, criterion)
 
-        # Compute second moment statistics WITH BIAS CORRECTION
-        second_moment_stats = compute_second_moment_stats(optimizer, optimizer_name, beta2)
-
         # Track best accuracy
         if test_metrics['test_acc'] > best_acc:
             best_acc = test_metrics['test_acc']
@@ -558,7 +469,6 @@ def train_single_optimizer(optimizer_name: str, optimizer_class=None,
             'test_loss': test_metrics['test_loss'],
             'test_acc': test_metrics['test_acc'],
             'best_test_acc': best_acc,
-            **second_moment_stats,
         }
 
         # Include grad-norm metrics only when clipping is active
@@ -579,8 +489,7 @@ def train_single_optimizer(optimizer_name: str, optimizer_class=None,
             print(f"Epoch {epoch:3d}/{NUM_EPOCHS} | LR: {current_lr:.6f} | "
                   f"Train: {train_metrics['train_acc']:5.2f}% | "
                   f"Test: {test_metrics['test_acc']:5.2f}% | "
-                  f"Best: {best_acc:5.2f}% | "
-                  f"2ndM μ={second_moment_stats['second_moment_mean']:.2e}"
+                  f"Best: {best_acc:5.2f}%"
                   f"{clip_info}")
 
     print(f"\n{'='*80}")
@@ -592,10 +501,6 @@ def train_single_optimizer(optimizer_name: str, optimizer_class=None,
     return best_acc
 
 
-# ============================================================================
-# EXAMPLE USAGE
-# ============================================================================
-
 if __name__ == "__main__":
     # Import your optimizers
     # from iris import IRIS
@@ -604,7 +509,7 @@ if __name__ == "__main__":
     # import bitsandbytes as bnb
 
     # Example 1: Train with standard AdamW (built-in PyTorch)
-    best_acc = train_single_optimizer("adamw")
+    # best_acc = train_single_optimizer("adamw")
 
     # Example 2: Train with RAdam (built-in PyTorch)
     # best_acc = train_single_optimizer("radam")
@@ -618,7 +523,7 @@ if __name__ == "__main__":
 
     # Example 5: Train with Adan
     # from adan.adan import Adan
-    # best_acc = train_single_optimizer("adan", Adan)
+    best_acc = train_single_optimizer("adan", Adan)
 
     # Example 6: Train with AdaBelief
     # from adabelief_pytorch import AdaBelief

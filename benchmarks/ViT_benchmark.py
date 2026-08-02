@@ -129,11 +129,7 @@ SAVE_TOP_K          = 3
 CHECKPOINT_MONITOR  = 'val/top1_acc'
 CHECKPOINT_MODE     = 'max'
 
-
-
 # DATASET & MODEL REGISTRY
-
-
 DATASET_CONFIG = {
     'imagenet1k': {
         'num_classes': 1000,
@@ -174,11 +170,7 @@ MODEL_REGISTRY = {
     'vit_huge_patch16_224':  ('huge',  1280,  32, 16, 5120),
 }
 
-
-
 # LION OPTIMIZER (self-contained fallback -- no external dep needed)
-
-
 class Lion(torch.optim.Optimizer):
     """
     Lion optimizer (EvoLved Sign Momentum).
@@ -359,17 +351,13 @@ class ImageNetViT(pl.LightningModule):
         self.criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
         self.epoch_start_time = None
 
-    # 
     # forward
-    # 
     def forward(self, x):
         if self.is_hf_model:
             return self.model(x).logits
         return self.model(x)
 
-    # 
     # steps
-    # 
     def _accuracy(self, logits, y):
         _, pred = logits.topk(5, 1, True, True)
         pred    = pred.t()
@@ -450,9 +438,7 @@ class ImageNetViT(pl.LightningModule):
         self.log('test/top5_acc', top5, on_step=False, on_epoch=True, sync_dist=True)
         return loss
 
-    # 
     # optimizer & scheduler
-    # 
     def configure_optimizers(self):
         # -- Build parameter groups with optional layer-wise LR decay --
         if self.use_layer_decay and self.is_hf_model:
@@ -488,9 +474,7 @@ class ImageNetViT(pl.LightningModule):
             'lr_scheduler': {'scheduler': scheduler, 'interval': 'epoch', 'frequency': 1}
         }
 
-    # 
     # layer-wise LR decay helpers
-    # 
     def _get_layer_wise_param_groups_hf(self):
         param_groups = []
         num_layers   = len(self.model.vit.encoder.layer)
@@ -871,8 +855,6 @@ def train_vit_imagenet(optimizer_class, optimizer_kwargs: dict, config: dict = N
 
 
 # MAIN
-
-
 def main():
     cleanup_wandb()
 
