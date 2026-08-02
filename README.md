@@ -24,7 +24,7 @@ for batch in dataloader:
 
 The formal writeup (math, proofs, related work) lives in a separate repo: [IRIS-documentation](https://github.com/madhavasthana-oss/iris-latex). This README covers usage and reports what has actually been tested.
 
----
+Development history: This repository contains the current IRIS implementation only. Earlier exploratory versions, discarded algorithms, failed experiments, and the complete development history are preserved in [IRIS-exp](https://github.com/madhavasthana-oss/iris_exp)
 
 ## Status
 
