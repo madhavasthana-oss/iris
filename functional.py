@@ -336,8 +336,8 @@ def _multi_tensor_iris(
             updates = torch._foreach_mul(device_innov_res, beta2)
             torch._foreach_add_(updates, device_grad_ests)
             torch._foreach_div_(updates, denoms)
-            torch._foreach_maxium_(updates, -1.0)
-            torch._foreach_minium_(updates, 1.0)
+            torch._foreach_maximum_(updates, -1.0)
+            torch._foreach_minimum_(updates, 1.0)
             torch._foreach_add_(device_params, updates, alpha=-lr)
         else:
             torch._foreach_addcdiv_(device_params, device_grad_ests, denoms, value=-lr)
